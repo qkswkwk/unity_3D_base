@@ -1,6 +1,9 @@
+using System.Collections;
 using System.Transactions;
+using Unity.VisualScripting;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.XR;
 
 public class Player : MonoBehaviour
 {
@@ -10,6 +13,8 @@ public class Player : MonoBehaviour
     public bool[] hasWeapons;
     public GameObject[] grenades;
     public int hasGrenades;
+    public GameObject grenadeObj;
+    public Camera followCamera;
 
     public int ammo;
     public int coin;
@@ -26,6 +31,8 @@ public class Player : MonoBehaviour
     bool wDown;
     bool jDown;
     bool fDown;
+    bool gDown;
+    bool rDown;
     bool iDown;
     bool sDown1;
     bool sDown2;
@@ -34,13 +41,17 @@ public class Player : MonoBehaviour
     bool isJump;
     bool isDodge;
     bool isSwap;
+    bool isReload;
     bool isFireReady = true;
+    bool isBorder;
+    bool isDamage;
 
     Vector3 moveVec;
     Vector3 dodgeVec;
 
     Rigidbody rigid;
     Animator anim;
+    MeshRenderer[] meshs;
 
     GameObject nearObject;
     Weapon equipWeapon;
@@ -51,6 +62,7 @@ public class Player : MonoBehaviour
     {
         rigid = GetComponent<Rigidbody>();
         anim = GetComponentInChildren<Animator>();
+        meshs = GetComponentsInChildren<MeshRenderer>();
     }
 
     void Update()
@@ -59,7 +71,9 @@ public class Player : MonoBehaviour
         Move();
         Turn();
         Jump();
+        Grenade();
         Attack();
+        Reload();
         Dodge();
         Interation();
         Swap();
@@ -71,7 +85,9 @@ public class Player : MonoBehaviour
         vAxis = Input.GetAxisRaw("Vertical");
         wDown = Input.GetButton("Walk");
         jDown = Input.GetButtonDown("Jump");
-        fDown = Input.GetButtonDown("Fire1");
+        fDown = Input.GetButton("Fire1");
+        gDown = Input.GetButtonDown("Fire2");
+        rDown = Input.GetButtonDown("Reload");
         iDown = Input.GetButtonDown("Interation");
         sDown1 = Input.GetButtonDown("Swap1");
         sDown2 = Input.GetButtonDown("Swap2");
@@ -85,10 +101,11 @@ public class Player : MonoBehaviour
         if (isDodge)
             moveVec = dodgeVec;
 
-        if (isSwap || !isFireReady)
+        if (isSwap || isReload || !isFireReady)
             moveVec = Vector3.zero;
 
-        transform.position += moveVec * speed * (wDown ? 0.3f : 1f) * Time.deltaTime;
+        if (!isBorder)
+            transform.position += moveVec * speed * (wDown ? 0.3f : 1f) * Time.deltaTime;
 
         anim.SetBool("isRun", moveVec != Vector3.zero);
         anim.SetBool("isWalk", wDown);
@@ -97,6 +114,16 @@ public class Player : MonoBehaviour
     void Turn()
     {
         transform.LookAt(transform.position + moveVec);
+
+        if (fDown) {
+            Ray ray = followCamera.ScreenPointToRay(Input.mousePosition);
+            RaycastHit rayHit;
+            if (Physics.Raycast(ray, out rayHit, 100)) {
+                Vector3 nextVec = rayHit.point - transform.position;
+                nextVec.y = 0;
+                transform.LookAt(transform.position + nextVec);
+            }
+        }
     }
 
     void Jump()
@@ -106,6 +133,29 @@ public class Player : MonoBehaviour
             anim.SetBool("isJump", true);
             anim.SetTrigger("doJump");
             isJump = true;
+        }
+    }
+
+    void Grenade()
+    {
+        if (hasGrenades == 0)
+            return;
+
+        if (gDown && !isReload && !isSwap) {
+            Ray ray = followCamera.ScreenPointToRay(Input.mousePosition);
+            RaycastHit rayHit;
+            if (Physics.Raycast(ray, out rayHit, 100)) {
+                Vector3 nextVec = rayHit.point - transform.position;
+                nextVec.y = 10;
+
+                GameObject instantGrenade = Instantiate(grenadeObj, transform.position, transform.rotation);
+                Rigidbody rigidGrenade = instantGrenade.GetComponent<Rigidbody>();
+                rigidGrenade.AddForce(nextVec, ForceMode.Impulse);
+                rigidGrenade.AddTorque(Vector3.back * 10, ForceMode.Impulse);
+
+                hasGrenades--;
+                grenades[hasGrenades].SetActive(false);
+            }
         }
     }
 
@@ -119,9 +169,37 @@ public class Player : MonoBehaviour
 
         if (fDown && isFireReady && !isDodge && !isSwap) {
             equipWeapon.Use();
-            anim.SetTrigger("doSwing");
+            anim.SetTrigger(equipWeapon.type == Weapon.Type.Melee ? "doSwing" : "doShot");
             fireDelay = 0;
         }
+    }
+
+    void Reload()
+    {
+        if (equipWeapon == null)
+            return;
+
+        if (equipWeapon.type == Weapon.Type.Melee)
+            return;
+
+        if (ammo == 0)
+            return;
+
+        if (rDown && !isJump && !isDodge && !isSwap && isFireReady) {
+            anim.SetTrigger("doReload");
+            isReload = true;
+
+            Invoke("ReloadOut", 3f);
+        }
+    }
+
+    void ReloadOut()
+    {
+        int reAmmo = ammo + equipWeapon.curAmmo < equipWeapon.maxAmmo
+                   ? ammo : equipWeapon.maxAmmo - equipWeapon.curAmmo;
+        equipWeapon.curAmmo += reAmmo;
+        ammo -= reAmmo;
+        isReload = false;
     }
 
     void Dodge()
@@ -190,6 +268,23 @@ public class Player : MonoBehaviour
         }
     }
 
+    void FreezeRotation()
+    {
+        rigid.angularVelocity = Vector3.zero;
+    }
+
+    void StopToWall()
+    {
+        Debug.DrawRay(transform.position, transform.forward * 5, Color.green);
+        isBorder = Physics.Raycast(transform.position, moveVec, 5, LayerMask.GetMask("Wall"));
+    }
+
+    void FixedUpdate()
+    {
+        FreezeRotation();
+        StopToWall();
+    }
+
     void OnCollisionEnter(Collision collision)
     {
         if (collision.gameObject.tag == "Floor") {
@@ -219,21 +314,54 @@ public class Player : MonoBehaviour
                         health = maxHealth;
                     break;
                 case Item.Type.Grenade:
+                    if (hasGrenades == maxHasGrenades)
+                        return;
                     grenades[hasGrenades].SetActive(true);
                     hasGrenades += item.value;
-                    if (hasGrenades > maxHasGrenades)
-                        hasGrenades = maxHasGrenades;
                     break;
             }
             Destroy(other.gameObject);
         }
+        else if (other.tag == "EnemyBullet") {
+            if (!isDamage) {
+                Bullet enemyBullet = other.GetComponent<Bullet>();
+                health -= enemyBullet.damage;
+
+                bool isBossAtk = other.name == "Boss Melee Attack";
+                StartCoroutine(OnDamage(isBossAtk));
+            }
+
+            if (other.GetComponent<Rigidbody>() != null)
+                Destroy(other.gameObject);
+        }
+    }
+
+    IEnumerator OnDamage(bool isBossAtk)
+    {
+        isDamage = true;
+        foreach(MeshRenderer mesh in meshs) {
+            mesh.material.color = Color.yellow;
+        }
+
+        if (isBossAtk)
+            rigid.AddForce(transform.forward * -25, ForceMode.Impulse);
+
+        yield return new WaitForSeconds(1f);
+
+        isDamage = false;
+        foreach (MeshRenderer mesh in meshs) {
+            mesh.material.color = Color.white;
+        }
+
+        if (isBossAtk)
+            rigid.linearVelocity = Vector3.zero;
     }
 
     void OnTriggerStay(Collider other)
     {
         if (other.tag == "Weapon")
             nearObject = other.gameObject;
-    }
+    }   
 
     void OnTriggerExit(Collider other)
     {
